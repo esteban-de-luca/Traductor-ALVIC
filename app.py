@@ -24,8 +24,8 @@ st.markdown(
 # Configuración
 with st.expander("⚙️ Configuración", expanded=False):
     db_path = st.text_input(
-        "Ruta del CSV base ALVIC (en el servidor/repo)",
-        value="BASE DE DATOS ALVIC 2026.csv",
+    "Ruta del CSV base ALVIC (en el servidor/repo)",
+    value="BASE DE DATOS ALVIC 2026.csv",
         help="Por defecto asume que el archivo está en el root del repo con este nombre.",
     )
 
