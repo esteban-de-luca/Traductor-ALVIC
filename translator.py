@@ -1,8 +1,11 @@
+import os
 import pandas as pd
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 
-import pandas as pd
 
+# -----------------------------
+# Config: columnas esperadas input sin cabecera
+# -----------------------------
 EXPECTED_COLS = [
     "ID de Proyecto",
     "SKU",
@@ -20,49 +23,38 @@ EXPECTED_COLS = [
     "Acabado de tirador",
 ]
 
-def load_input_csv(path: str) -> pd.DataFrame:
-    """
-    Carga el CSV CUBRO tolerando:
-    - con cabecera correcta
-    - sin cabecera (primera fila es dato)
-    """
-    # 1) Intento normal
-    df = pd.read_csv(path)
 
-    # Si ya vienen columnas esperadas, perfecto
-    if all(c in df.columns for c in ["Ancho", "Alto", "Acabado"]):
-        return df
-
-    # 2) Si parece que no hay header real, re-lee sin header
-    df2 = pd.read_csv(path, header=None)
-
-    # Si tiene al menos 14 columnas, asigna las esperadas
-    if df2.shape[1] >= len(EXPECTED_COLS):
-        df2 = df2.iloc[:, :len(EXPECTED_COLS)]
-        df2.columns = EXPECTED_COLS
-        return df2
-
-    # Si no, error explícito
-    raise ValueError(
-        f"CSV input no tiene el formato esperado. Columnas detectadas: {df.columns.tolist()} "
-        f"(sin header: {df2.shape[1]} columnas)."
-    )
-
-
-# Orden EXACTO según tu lista original de colores CUBRO:
+# -----------------------------
+# Config: colores (orden exacto)
+# -----------------------------
+# Orden EXACTO según tu lista de colores CUBRO:
 # Blanco, Negro, Tinta, Seda, Tipo, Crema, Humo, Zafiro, Celeste, Pino, Noche, Marga, Argil, Curry, Roto, Ave
 CUBRO_COLORS_ORDER = [
     "Blanco", "Negro", "Tinta", "Seda", "Tipo", "Crema", "Humo", "Zafiro",
     "Celeste", "Pino", "Noche", "Marga", "Argil", "Curry", "Roto", "Ave"
 ]
 
-# Códigos internos ALVIC en el MISMO orden que los colores anteriores
+# Códigos internos ALVIC en el MISMO orden
 ALVIC_COLOR_CODES_ORDER = [
-    "L3806", "L4596", "L4706", "L5266", "L5276", "L5556", "L5866", "L5906",
-    "L6766", "L9146", "L9166", "L9556", "LA056", "LA066", "LA076", "LA086"
+    "L3806",
+    "L4596",
+    "L4706",
+    "L5266",
+    "L5276",
+    "L5556",
+    "L5866",
+    "L5906",
+    "L6766",
+    "L9146",
+    "L9166",
+    "L9556",
+    "LA056",
+    "LA066",
+    "LA076",
+    "LA086",
 ]
 
-# Mapeo CUBRO -> "Color ALVIC (texto)" (para filtrar DB si hace falta)
+# CUBRO -> texto ALVIC (para filtrar DB si la DB usa nombres)
 COLOR_TEXT_MAP: Dict[str, str] = {
     "blanco": "BLANCO SM",
     "negro": "NEGRO SM",
@@ -82,11 +74,15 @@ COLOR_TEXT_MAP: Dict[str, str] = {
     "ave": "TORTORA SM",
 }
 
-# Mapeo CUBRO -> "Código color interno ALVIC"
+# CUBRO -> código interno ALVIC
 COLOR_CODE_MAP: Dict[str, str] = {
     c.casefold(): code for c, code in zip(CUBRO_COLORS_ORDER, ALVIC_COLOR_CODES_ORDER)
 }
 
+
+# -----------------------------
+# Helpers
+# -----------------------------
 def _norm_str(x) -> str:
     return str(x).strip()
 
@@ -96,13 +92,125 @@ def _norm_key(x) -> str:
 def clamp_min_100(x: int) -> int:
     return 100 if x < 100 else x
 
+
+# -----------------------------
+# Normalización de columnas de input
+# -----------------------------
+def _canonicalize(col: str) -> str:
+    """
+    Normaliza un nombre de columna para poder compararlo:
+    - quita espacios extremos
+    - colapsa espacios internos
+    - lower
+    """
+    s = str(col).strip()
+    s = " ".join(s.split())
+    return s.casefold()
+
+def _rename_columns_with_synonyms(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Renombra columnas de input a los nombres canónicos que usa el traductor:
+    Ancho, Alto, Acabado, Material, Gama, Mecanizado o sin mecanizar (vacío)
+    """
+    synonyms = {
+        "ancho": ["ancho", "width", "w", "anchura"],
+        "alto": ["alto", "height", "h", "altura"],
+        "acabado": ["acabado", "color", "acabado color", "finish", "acabo"],
+        "material": ["material", "mat", "materiales"],
+        "gama": ["gama", "serie", "range"],
+        "mecanizado o sin mecanizar (vacío)": [
+            "mecanizado o sin mecanizar (vacío)",
+            "mecanizado o sin mecanizar",
+            "mecanizado",
+            "cnc",
+            "mecanizada",
+            "mecanizado/sin mecanizar",
+        ],
+    }
+
+    # Construir mapa actual->nuevo
+    current_cols = list(df.columns)
+    canon_map = {c: _canonicalize(c) for c in current_cols}
+
+    rename_dict = {}
+    for target, keys in synonyms.items():
+        keys_canon = set(_canonicalize(k) for k in keys)
+        for col in current_cols:
+            if canon_map[col] in keys_canon:
+                # Asignar al nombre esperado por el traductor (con mayúscula estándar)
+                if target == "ancho":
+                    rename_dict[col] = "Ancho"
+                elif target == "alto":
+                    rename_dict[col] = "Alto"
+                elif target == "acabado":
+                    rename_dict[col] = "Acabado"
+                elif target == "material":
+                    rename_dict[col] = "Material"
+                elif target == "gama":
+                    rename_dict[col] = "Gama"
+                elif target == "mecanizado o sin mecanizar (vacío)":
+                    rename_dict[col] = "Mecanizado o sin mecanizar (vacío)"
+
+    if rename_dict:
+        df = df.rename(columns=rename_dict)
+
+    # Limpia espacios en nombres restantes (sin cambiar significado)
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
+def load_input_csv(path: str) -> pd.DataFrame:
+    """
+    Carga el CSV CUBRO tolerando:
+    - con cabecera correcta (o similar)
+    - sin cabecera (primera fila es dato)
+    Además normaliza nombres de columnas (ej. 'acabado', 'Acabado ', etc.)
+    """
+    # 1) Intento normal
+    df = pd.read_csv(path)
+    df = _rename_columns_with_synonyms(df)
+
+    # Si ya vienen columnas clave, listo
+    if all(c in df.columns for c in ["Ancho", "Alto", "Acabado"]):
+        return df
+
+    # 2) Releer sin header
+    df2 = pd.read_csv(path, header=None)
+
+    # Si tiene suficientes columnas, asignar EXPECTED_COLS
+    if df2.shape[1] >= len(EXPECTED_COLS):
+        df2 = df2.iloc[:, :len(EXPECTED_COLS)]
+        df2.columns = EXPECTED_COLS
+        df2 = _rename_columns_with_synonyms(df2)
+        return df2
+
+    # 3) Error claro
+    raise ValueError(
+        "CSV input no tiene el formato esperado.\n"
+        f"- Columnas detectadas (lectura con header): {df.columns.tolist()}\n"
+        f"- Columnas detectadas (lectura sin header): {df2.shape[1]} columnas\n"
+        "Esperaba al menos columnas equivalentes a: Ancho, Alto, Acabado."
+    )
+
+
+# -----------------------------
+# DB ALVIC
+# -----------------------------
 def load_alvic_db(db_csv_path: str) -> pd.DataFrame:
+    if not os.path.exists(db_csv_path):
+        raise FileNotFoundError(
+            f"No se encontró la base ALVIC en '{db_csv_path}'. "
+            "Revisa el nombre del archivo y la ruta (ej: data/base_datos_alvic_2026.csv)."
+        )
+
     db = pd.read_csv(db_csv_path)
 
     # Normalización básica
     db["Modelo"] = db["Modelo"].astype(str).str.upper().str.strip()
-    # Importante: en vuestra DB puede haber Color como texto o como código interno.
-    # Creamos dos columnas normalizadas para poder filtrar por cualquiera.
+
+    # La DB puede tener en Color:
+    # - texto: "BLANCO SM"
+    # - o código interno: "L3806"
     db["Color_raw"] = db["Color"].astype(str).str.upper().str.strip()
 
     for c in ["Alto", "Ancho", "Grueso"]:
@@ -111,11 +219,18 @@ def load_alvic_db(db_csv_path: str) -> pd.DataFrame:
 
     db = db.dropna(subset=["ARTICULO", "Color_raw", "Alto", "Ancho"])
 
-    # Solo 06 ZENIT (según requisito)
-    db = db[db["Modelo"].str.contains("ZENIT", na=False) & db["Modelo"].str.contains("06", na=False)].copy()
+    # Solo 06 ZENIT
+    db = db[
+        db["Modelo"].str.contains("ZENIT", na=False)
+        & db["Modelo"].str.contains("06", na=False)
+    ].copy()
 
     return db
 
+
+# -----------------------------
+# Detección LAC / mecanizado
+# -----------------------------
 def detect_is_lac(row: pd.Series) -> bool:
     candidates = []
     for col in ["Gama", "Material"]:
@@ -126,73 +241,73 @@ def detect_is_lac(row: pd.Series) -> bool:
 def detect_is_machined(row: pd.Series) -> bool:
     """
     Columna: 'Mecanizado o sin mecanizar (vacío)'.
-    - Si viene vacía => SIN mecanizar
-    - Si tiene algo => MECANIZADA
+    - Vacío => SIN mecanizar
+    - Cualquier valor => MECANIZADA
     """
-    # Probamos varios nombres por robustez
-    possible_cols = [
-        "Mecanizado o sin mecanizar (vacío)",
-        "Mecanizado o sin mecanizar",
-        "Mecanizado",
-        "Mecanizado_o_sin_mecanizar",
-    ]
-    col = next((c for c in possible_cols if c in row.index), None)
-    if not col:
-        # Si no existe la columna, asumimos SIN mecanizar (más seguro para no “inventar CNC”)
-        return False
+    col = "Mecanizado o sin mecanizar (vacío)"
+    if col not in row.index:
+        return False  # seguro por defecto
+
     val = _norm_str(row[col])
     return val != "" and val.lower() not in {"nan", "none", "null"}
 
+
+# -----------------------------
+# Mapeo de color CUBRO -> ALVIC
+# -----------------------------
 def map_color_cubro_to_alvic_text(cubro_color: str) -> Optional[str]:
     return COLOR_TEXT_MAP.get(_norm_key(cubro_color))
 
 def map_color_cubro_to_alvic_code(cubro_color: str) -> Optional[str]:
     return COLOR_CODE_MAP.get(_norm_key(cubro_color))
 
-def _filter_db_by_color(db: pd.DataFrame, color_text: Optional[str], color_code: Optional[str]) -> pd.DataFrame:
+
+def _filter_db_by_color(db: pd.DataFrame, color_text: Optional[str], color_code: Optional[str]) -> Tuple[pd.DataFrame, str]:
     """
-    Intenta filtrar la DB por el color usando:
-    1) código interno (si la DB lo contiene)
-    2) texto SM (si la DB lo contiene)
-    Si no encuentra nada, devuelve sin filtrar por color (pero marcamos luego que fue fallback).
+    Intenta filtrar DB por color usando:
+    1) código interno
+    2) texto SM
+    Si no encuentra nada, devuelve DB completa (fallback) y lo marca.
     """
-    d = db
     if color_code:
-        d_code = d[d["Color_raw"] == color_code.upper()]
+        d_code = db[db["Color_raw"] == color_code.upper()]
         if not d_code.empty:
-            return d_code
+            return d_code, "CODE"
 
     if color_text:
-        d_text = d[d["Color_raw"] == color_text.upper()]
+        d_text = db[db["Color_raw"] == color_text.upper()]
         if not d_text.empty:
-            return d_text
+            return d_text, "TEXT"
 
-    # fallback: no filtramos por color (último recurso)
-    return d
+    return db, "FALLBACK_NO_COLOR_FILTER"
 
+
+# -----------------------------
+# Matching tamaños
+# -----------------------------
 def find_best_match(db: pd.DataFrame, w: int, h: int) -> Tuple[Optional[pd.Series], str]:
     """
     Devuelve (fila_db, match_type)
     match_type: EXACT | ROTATED_EXACT | FIT | ROTATED_FIT | NO_MATCH
     """
-    # 1) Exacto
+    # Exacto
     exact = db[(db["Alto"] == h) & (db["Ancho"] == w)]
     if not exact.empty:
         return exact.iloc[0], "EXACT"
 
-    # 2) Rotación exacta
+    # Rotación exacta
     rexact = db[(db["Alto"] == w) & (db["Ancho"] == h)]
     if not rexact.empty:
         return rexact.iloc[0], "ROTATED_EXACT"
 
-    # 3) Fit (mínimo que contenga)
+    # Fit (mínimo panel que contenga)
     fit = db[(db["Alto"] >= h) & (db["Ancho"] >= w)].copy()
     if not fit.empty:
         fit["area"] = fit["Alto"] * fit["Ancho"]
         fit = fit.sort_values(["area", "Alto", "Ancho"])
         return fit.iloc[0], "FIT"
 
-    # 4) Rotated fit
+    # Rotated fit
     rfit = db[(db["Alto"] >= w) & (db["Ancho"] >= h)].copy()
     if not rfit.empty:
         rfit["area"] = rfit["Alto"] * rfit["Ancho"]
@@ -201,6 +316,10 @@ def find_best_match(db: pd.DataFrame, w: int, h: int) -> Tuple[Optional[pd.Serie
 
     return None, "NO_MATCH"
 
+
+# -----------------------------
+# Motor principal: traducir y separar
+# -----------------------------
 def translate_and_split(
     input_csv_path: str,
     db_csv_path: str,
@@ -210,19 +329,26 @@ def translate_and_split(
     ancho_col: str = "Ancho",
     alto_col: str = "Alto",
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+
     db = load_alvic_db(db_csv_path)
-    inp = pd.read_csv(input_csv_path)
 
-    for col in [acabado_col, ancho_col, alto_col]:
-        if col not in inp.columns:
-            raise ValueError(f"Falta columna obligatoria en input: '{col}'")
+    # Cargar input de forma robusta
+    inp = load_input_csv(input_csv_path)
 
-    out_rows = []
+    # Validación de columnas (ya normalizadas)
+    required = [acabado_col, ancho_col, alto_col]
+    missing = [c for c in required if c not in inp.columns]
+    if missing:
+        raise ValueError(
+            f"Faltan columnas obligatorias en input: {missing}. "
+            f"Columnas disponibles: {inp.columns.tolist()}"
+        )
+
+    out_rows: List[dict] = []
+
     for _, row in inp.iterrows():
         is_lac = detect_is_lac(row)
         is_machined = detect_is_machined(row)
-
-        # Copia base
         base = row.to_dict()
 
         if not is_lac:
@@ -246,7 +372,7 @@ def translate_and_split(
         color_text = map_color_cubro_to_alvic_text(cubro_color)
         color_code = map_color_cubro_to_alvic_code(cubro_color)
 
-        # Dimensiones (con regla mínimo 100mm por lado)
+        # Dimensiones + regla mínimo 100 mm
         try:
             w_raw = int(float(row[ancho_col]))
             h_raw = int(float(row[alto_col]))
@@ -286,14 +412,7 @@ def translate_and_split(
             })
             continue
 
-        # Filtrado por color con fallback
-        d_color = _filter_db_by_color(db, color_text=color_text, color_code=color_code)
-        if color_code and (not d_color.empty) and (d_color["Color_raw"].iloc[0] == color_code.upper()):
-            color_filter_mode = "CODE"
-        elif color_text and (not d_color.empty) and (d_color["Color_raw"].iloc[0] == color_text.upper()):
-            color_filter_mode = "TEXT"
-        else:
-            color_filter_mode = "FALLBACK_NO_COLOR_FILTER"
+        d_color, color_filter_mode = _filter_db_by_color(db, color_text=color_text, color_code=color_code)
 
         match, match_type = find_best_match(d_color, w=w, h=h)
 
@@ -335,5 +454,8 @@ def translate_and_split(
 
     machined.to_csv(output_machined_csv_path, index=False)
     non_machined.to_csv(output_non_machined_csv_path, index=False)
+
+    return machined, non_machined
+
 
     return machined, non_machined
