@@ -1,6 +1,54 @@
 import pandas as pd
 from typing import Dict, Tuple, Optional
 
+import pandas as pd
+
+EXPECTED_COLS = [
+    "ID de Proyecto",
+    "SKU",
+    "ID de pieza",
+    "Tipología de pieza",
+    "Ancho",
+    "Alto",
+    "Material",
+    "Gama",
+    "Acabado",
+    "Mecanizado o sin mecanizar (vacío)",
+    "Modelo de tirador",
+    "Posición de tirador",
+    "Dirección de apertura de puerta",
+    "Acabado de tirador",
+]
+
+def load_input_csv(path: str) -> pd.DataFrame:
+    """
+    Carga el CSV CUBRO tolerando:
+    - con cabecera correcta
+    - sin cabecera (primera fila es dato)
+    """
+    # 1) Intento normal
+    df = pd.read_csv(path)
+
+    # Si ya vienen columnas esperadas, perfecto
+    if all(c in df.columns for c in ["Ancho", "Alto", "Acabado"]):
+        return df
+
+    # 2) Si parece que no hay header real, re-lee sin header
+    df2 = pd.read_csv(path, header=None)
+
+    # Si tiene al menos 14 columnas, asigna las esperadas
+    if df2.shape[1] >= len(EXPECTED_COLS):
+        df2 = df2.iloc[:, :len(EXPECTED_COLS)]
+        df2.columns = EXPECTED_COLS
+        return df2
+
+    # Si no, error explícito
+    raise ValueError(
+        f"CSV input no tiene el formato esperado. Columnas detectadas: {df.columns.tolist()} "
+        f"(sin header: {df2.shape[1]} columnas)."
+    )
+
+
 # Orden EXACTO según tu lista original de colores CUBRO:
 # Blanco, Negro, Tinta, Seda, Tipo, Crema, Humo, Zafiro, Celeste, Pino, Noche, Marga, Argil, Curry, Roto, Ave
 CUBRO_COLORS_ORDER = [
