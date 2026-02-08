@@ -29,6 +29,17 @@ with st.expander("⚙️ Configuración", expanded=False):
         help="Por defecto asume que el archivo está en el root del repo con este nombre.",
     )
 
+with st.expander("🧪 Test de lectura de la base ALVIC", expanded=False):
+    if st.button("Probar lectura de la base"):
+        try:
+            db_preview = pd.read_csv(db_path)
+            st.success(f"OK: base cargada. Filas: {len(db_preview)} | Columnas: {len(db_preview.columns)}")
+            st.dataframe(db_preview.head(20), use_container_width=True)
+        except Exception as e:
+            st.error(f"No pude leer la base desde '{db_path}'. Error: {e}")
+            st.info("Revisa que el archivo exista en el repo y que el path sea correcto. Ej: data/base_datos_alvic_2026.csv")
+
+
 # Upload
 uploaded = st.file_uploader("Sube el CSV input (piezas CUBRO)", type=["csv"])
 
